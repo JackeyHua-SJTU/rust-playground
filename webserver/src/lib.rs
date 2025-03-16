@@ -2,6 +2,16 @@ use std::{sync::{mpsc, Arc, Mutex}, thread::{self, JoinHandle}};
 
 type Job = Box<dyn FnOnce() + Send + 'static>;
 
+/// The core idea is 
+///     Thread pool writes to a channel
+///     All threads in the pool compete to read from the channel
+///     The thread that get the new closure will run it
+/// 
+/// In order to allow multi-ownership in multi-thread background, we need Arc<Mutex>
+/// 
+/// In order to automatically drop, we need to implement `Drop` Trait, but it takes a 
+/// `&mut`, while we need to consume the sender, thus we use the pair of `Option` and `take()`
+
 pub struct ThreadPool {
     workers: Vec<Worker>,
     sender: Option<mpsc::Sender<Job>>,
@@ -43,6 +53,9 @@ impl Drop for ThreadPool {
     fn drop(&mut self) {
         drop(self.sender.take());
 
+        // Because we need ownership to call `join()`, and it is just a mutable reference
+        // We can use `Option` and `take()` agian
+        // But a better choice is `drain()`, it consumes the range and returns iterator
         for worker in self.workers.drain(..) {
             println!("Shutting down worker {}", worker.id);
 
@@ -55,6 +68,7 @@ impl Worker {
     pub fn new(id: usize, recv: Arc<Mutex<mpsc::Receiver<Job>>>) -> Self {
         Worker {
             id,
+            // When the tx is freed, all f will be Err(_), then exit
             thread: thread::spawn(move || loop {
                 let f = recv.lock().unwrap().recv();
                 match f {
